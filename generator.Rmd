@@ -1,0 +1,371 @@
+---
+title: "Data Generator"
+author: "Peng Chong"
+date: "22/02/2019"
+output: html_document
+---
+Heavily referenced from: https://xang1234.github.io/isochrone/
+otp apis doc: http://dev.opentripplanner.org/apidoc/1.3.0/
+
+
+Make sure otp server is up before running the code here
+The codes here are for data generations
+
+Setup:
+```{r setup, include<-FALSE}
+knitr::opts_chunk$set(echo <- TRUE)
+packages = c('tidyverse','leaflet', 'knitr','stringr','httr','geojsonio', 'sp', 'dplyr', 'SpatialAcc', 'rgeos', 'spdplyr', 'KernSmooth', 'raster') 
+for (p in packages){
+  if(!require(p, character.only = T)){ 
+    install.packages(p)
+  }
+  library(p,character.only = T) 
+}
+
+library(spdplyr)
+#localhost ends WITHOUT /
+localurl = 'http://localhost:8080'
+
+#Respective data paths ends WITHOUT /
+isopath = 'data/isodata'
+csvpath = 'data/csvdata'
+matrixpath = 'data/matrixdata'
+spatialpath = 'data/spatialdata'
+objpath = 'data/objdata'
+
+all.postals = read_csv(paste0(csvpath, '/all_postal_code.csv'))
+all.residential = read_csv(paste0(csvpath, '/RESIDENTIAL-prepared-hdb-details.csv'))
+schs.infos = read_csv(paste0(csvpath, '/general-information-of-schools.csv'))
+schs.infos$postal_code =  as.numeric(schs.infos$postal_code)
+
+schs.infos = inner_join(schs.infos, all.postals, by = c('postal_code' = 'POSTAL')) %>% dplyr::select('school_name', 'postal_code', 'LATITUDE', 'LONGITUDE', 'X', 'Y', 'ROAD_NAME') %>% group_by_at(vars( postal_code)) %>% filter(row_number() == 1)
+
+
+residential.infos = inner_join(all.residential, all.postals, by = c('POSTAL' = 'POSTAL')) %>% dplyr::select('ADDRESS' = 'ADDRESS.x', 'POSTAL', 'LATITUDE' = 'LATITUDE.x', 'LONGITUDE' = 'LONGITUDE.x', 'X' = 'X.x', 'Y' = 'Y.x', 'ROAD_NAME' = 'ROAD_NAME.x') %>% group_by_at(vars( POSTAL)) %>% filter(row_number() == 1)
+
+
+#fixing errors 
+residential.infos = residential.infos[-c(3724),]
+
+crsobj = CRS("+init=EPSG:3857")
+coordinates(schs.infos)<-~LONGITUDE+LATITUDE
+proj4string(schs.infos) = crsobj
+
+coordinates(residential.infos)<-~LONGITUDE+LATITUDE
+proj4string(residential.infos) = crsobj
+
+
+
+```
+
+Save to file
+```{r}
+saveRDS(all.postals, file='data/objdata/all.postal.rds')
+saveRDS(residential.infos, file='data/objdata/all.residential.rds')
+saveRDS(schs.infos, file='data/objdata/all.school.rds')
+```
+
+
+
+functions
+```{r}
+
+#Getting the data of a trip
+get_dist = function(fromLat, fromLong, toLat, toLong){
+    current <- GET(
+      paste0(localurl, '/otp/routers/default/plan'),
+      query = list(
+        fromPlace = paste(fromLat,fromLong,sep = ","),
+        toPlace = paste(toLat,toLong,sep = ","),
+        mode = "WALK,TRANSIT",
+        date = "03-27-2019",
+        time= "07:00am",
+        maxWalkDistance = '1600'
+      )
+    )
+    #return(content(current))
+    if (length(content(current)[["plan"]][["itineraries"]][[1]]) == 0){
+      return(NULL)
+    }else{
+      return(content(current)[["plan"]][["itineraries"]][[1]])
+    }
+    
+}
+
+#Generating the dist and duration from all residential HDB and storing it for each school
+generate_dist <-function(residential.info, destLat, destLong, schName){
+  result = data.frame(matrix(ncol = 6, nrow= 0))
+  colnames(result) = c('address', 'destination', 'latitude', 'longitude', 'duration', 'distance')
+  
+  for(i in 1: length(residential.info@coords[,1])){
+    lat = as.double(residential.info@coords[i,]['LATITUDE'])
+    long = as.double(residential.info@coords[i,]['LONGITUDE'])
+    address = residential.info@data[i,]$ADDRESS
+      info = get_dist(lat, long, destLat, destLong)
+      if (is.null(info)){
+        next()
+      }
+      total = 0
+      for (j in 1:length(info$legs)){
+        total = total + info$legs[[j]]$distance
+      }
+      
+      dist = total/1000
+      dur = info$duration/60
+      result[nrow(result)+1,] = list(address, schName, lat, long, dur, dist)
+      
+  }
+  saveRDS(result, file = paste0(matrixpath, '/', schName, '.rds'))
+  return(result)
+}
+
+#isochrone generation and storing it for each school
+get_geojson<-function(lat,lng,filename, rb = FALSE){
+    current <- GET(
+       paste0(localurl, '/otp/routers/current/isochrone'),
+      query = list(
+        fromPlace = paste(lat,lng,sep = ","),
+        mode = "WALK,TRANSIT",
+        date = "03-27-2019",
+        time= "07:00am",
+        geoidElevation = TRUE,
+        maxWalkDistance = 1600,
+        walkReluctance = 5,
+        minTransferTime = 60,
+        cutoffSec = 900,
+        cutoffSec = 1800,
+        cutoffSec = 2700,
+        cutoffSec = 3600,
+        cutoffSec = 5400
+      )
+    )
+    current <- content(current, as = "text", encoding = "UTF-8")
+    write(current, file = paste0(isopath, '/', filename,".geojson"))
+    
+    if(rb){
+      sp = geojsonio::geojson_read(paste0(isopath, '/', filename,".geojson"), what = "sp")
+      file.remove(paste0(isopath, '/', filename,".geojson"))
+      return(sp)
+    }
+}
+
+#used for internal testing and checking of isochrone
+show_isochrone = function(sch,path, lng, lat, res_sp){
+iso <- geojsonio::geojson_read(path,
+  what = "sp")
+
+pal=c('bisque','cyan','gold','tomato','red')
+
+m =leaflet() %>%
+  setView( lng = 103.8198, lat = 1.3521, zoom = 11) %>%
+  addProviderTiles(providers$CartoDB.DarkMatter,
+                   options = providerTileOptions(opacity = 0.8)) %>%  
+  addPolygons(data =iso, stroke = TRUE, weight=0.5,
+              smoothFactor = 0.3, color="black",
+              fillOpacity = 0.2,fillColor =pal ) %>%
+  addCircleMarkers( lng = residential.infos@coords[,1], lat = residential.infos@coords[,2], opacity = 1, fillOpacity = 1, color = '#ADFF2F', stroke=FALSE, radius= 2, popup = residential.infos@data$ADDRESS, label = sch, data = sch) %>%
+  addMarkers(lng = lng, lat = lat, popup = sch, options = markerOptions(interactive = TRUE), clusterOptions = markerClusterOptions()) %>%
+  addLegend(position="bottomleft",colors=rev(c("cornsilk", "lightskyblue","greenyellow","gold","tomato")),
+            labels=rev(c("90 min", "60 min","45 min",
+                     "30 min","15 min")),
+            opacity = 0.8,
+            title=paste0("Travel Time with Public Transport to ", sch) ) %>%
+  addLegend(position="bottomright",colors=rev(c('greenyellow')),
+            labels=rev(c("HDB")),
+            opacity = 0.8) %>%
+  htmlwidgets::onRender("
+            function(el,x) {
+                map = this;
+            }
+        ")
+return(m)
+}
+
+#applying hansen to the stored data generated
+apply_hansen = function(res){
+  result = res %>% mutate(demand =100)
+  durationMatrix = result %>% dplyr::select('duration')
+  acc_hansen <- data.frame(ac(result$demand,
+               c(10), durationMatrix,
+               power = 0.01, family = "Hansen"))
+  result_duration = result
+  result_duration$durationHansen = acc_hansen[,1]
+  result_duration$durationHansen[is.na(result_duration$durationHansen)] = 0
+  
+  
+  distanceMatrix = result %>% dplyr::select('distance')
+  acc_hansen <- data.frame(ac(result$demand,
+               c(10), distanceMatrix,
+               power = 0.01, family = "Hansen"))
+  result_final = result_duration
+  result_final$distanceHansen = acc_hansen[,1]
+  result_final$distanceHansen[is.na(result_final$distanceHansen)] = 0
+  # colnames(result_final)[8:9] = c('durationHansen', 'distanceHansen')
+  return (result_final)
+}
+
+#hansen has to be named as accHansen on the spdf
+#type is either duration or distance
+#applying hansen calculations into the contours generated
+integrate_hansen = function(contour.poly, sp.points.poly, type){
+  uni = rev(sort(unique(contour.poly$Value)))
+  points.copied = sp.points.poly
+  contour.copied = contour.poly
+  if (type == 'duration'){
+      contour.copied$duration_hansen = 0
+      
+      for(j in 1:length(uni)){
+        polys = contour.copied[contour.copied$Value == uni[j],]
+        for(i in 1:nrow(polys)){
+          ff = gContains(polys[i,], points.copied, byid = TRUE)
+          points.copied$checker = ff
+          sub = points.copied %>% filter(checker == TRUE)
+          total = sum(sub$durationHansen, na.rm = TRUE)
+          avg = total/length(sub)
+            if (is.na(avg)){
+              avg = 0
+            }
+          polys@data$duration_hansen[i] = avg
+          points.copied = points.copied %>% filter(checker == FALSE)
+        }
+        temp.df = contour.copied %>% filter(Value == uni[j]) %>% mutate(duration_hansen = polys$duration_hansen) 
+        temp.df = temp.df@data
+      
+        for(i in 1:nrow(temp.df)){
+          f = which(contour.copied@data$area_sqkm == temp.df$area_sqkm[i], arr.ind=TRUE)
+          contour.copied@data$duration_hansen[f] = temp.df$duration_hansen[i]
+        }
+      }
+      return(contour.copied)
+  }else{
+      contour.copied$distance_hansen = 0
+      
+      for(j in 1:length(uni)){
+        polys = contour.copied[contour.copied$Value == uni[j],]
+        for(i in 1:nrow(polys)){
+          ff = gContains(polys[i,], points.copied, byid = TRUE)
+          
+          points.copied$checker = ff
+          sub = points.copied %>% filter(checker == TRUE)
+          total = sum(sub$distanceHansen, na.rm = TRUE)
+          avg = total/length(sub)
+            if (is.na(avg)){
+              avg = 0
+            }
+          polys@data$distance_hansen[i] = avg
+          points.copied = points.copied %>% filter(checker == FALSE)
+        }
+        temp.df = contour.copied %>% filter(Value == uni[j]) %>% mutate(distance_hansen = polys$distance_hansen) 
+        temp.df = temp.df@data
+      
+        for(i in 1:nrow(temp.df)){
+          f = which(contour.copied@data$area_sqkm == temp.df$area_sqkm[i], arr.ind=TRUE)
+          contour.copied@data$distance_hansen[f] = temp.df$distance_hansen[i]
+        }
+      }
+      return(contour.copied)
+  }
+  
+}
+
+```
+
+```{r}
+#internal - correcting colnames
+for (i in 1:2){
+  lsch = schs.infos@data[i,'school_name']
+  res = readRDS(paste0('data/matrixdata/',lsch,'.rds'))
+  colnames(res) = c('address', 'destination', 'latitude', 'longitude', 'duration', 'distance')
+  saveRDS(res, file = paste0('data/matrixdata/',lsch,'.rds'))
+
+}
+```
+
+
+
+```{r}
+#internal - converting to sp
+for(i in 1: 357){
+  print(i)
+  lsch = schs.infos@data[i,'school_name']
+  res = readRDS(paste0('data/matrixdata/',lsch,'.rds'))
+  coordinates(res) = ~ longitude +  latitude
+  proj4string(res) = proj4string(residential.infos)
+  saveRDS(res, file = paste0('data/matrixdata/',lsch,'.rds'))
+}
+```
+
+
+Generation of contouring of kernel density of residential HDB and storing it
+```{r}
+d2d = bkde2D(cbind(residential.infos@coords[,1],residential.infos@coords[,2]),bandwidth=c(0.0025,0.0025))
+contour(d2d$x1,d2d$x2,d2d$fhat)
+lines = contourLines(x=d2d$x1,y=d2d$x2,z = d2d$fhat,nlevels = 8)
+dd1 = sapply(1:length(lines),function(i) Polygon(as.matrix(cbind(lines[[i]]$x,lines[[i]]$y))))
+dd2 = sapply(1:length(lines),function(i) Polygons(list(dd1[[i]]),i))
+poly_data = data.frame(Value = sapply(1:length(lines),function(i) lines[[i]]$level))
+dd3 = SpatialPolygonsDataFrame(SpatialPolygons(dd2),data = poly_data)
+values = unique(sapply(1:length(dd3@data[["Value"]]),function(i) dd3@data[["Value"]]))[,1]
+dd3$area_sqkm <- area(dd3) / 1
+proj4string(dd3) = proj4string(residential.infos)
+saveRDS(dd3, file='data/objdata/kernel.residential.rds')
+```
+
+Testing out contour overlay
+```{r}
+pal <- colorFactor(
+          palette = 'Greens',
+          domain = result_acc$accHansen
+        )
+
+dd3 = readRDS(file='data/objdata/kernel.residential.rds')
+
+uni = unique(dd3$Value)
+
+m = leaflet() %>% addProviderTiles('CartoDB.DarkMatter', group = 'providertiles')
+for(j in 1:length(uni)){
+  polys = dd3[dd3$Value == uni[j],]
+  m = m %>% addPolygons(data =polys, stroke = TRUE, weight=0.5, smoothFactor = 0.2, color="black", fillOpacity = 0.6, fillColor = brewer.pal(length(uni),"Greens")[j] )
+}
+m
+```
+
+
+Here generates the isochrone maps and the distance/duration data for all the residential HDB to each school
+
+```{r}
+#isochrone generation for all school - WARNING IO intensive, may take to an hour to run
+for (i in 1:357){
+  lsch = schs.infos@data[i,'school_name']
+  print(lsch)
+  lat = schs.infos@coords[i,2]
+  long = schs.infos@coords[i,1]
+  print(lat)
+  print(long)
+
+ iso = get_geojson(lat, long, schs.infos@data[i,'school_name'], rb = TRUE)
+ proj4string(iso) = proj4string(residential.infos)
+ res = colSums(gContains(iso, residential.infos, byid = TRUE))
+ res = tbl_df(res)
+ colnames(res) = 'blocks'
+ iso@data = bind_cols(iso@data, res)
+ saveRDS(iso, file = paste0(isopath, '/', lsch, '.rds'))
+```
+
+```{r}
+#hansen generation for all school - WARNING IO intensive, may take up to a week to run
+for (i in 1:357){
+  lsch = schs.infos@data[i,'school_name']
+  res = readRDS(paste0(matrixpath, '/',lsch,'.rds'))
+  result_acc = apply_hansen(res)
+  saveRDS(result_acc, paste0(matrixpath, '/',lsch,'.rds'))
+  coordinates(result_acc) = ~ longitude +  latitude
+  proj4string(result_acc) = proj4string(residential.infos)
+  
+  semi = integrate_hansen(dd3, result_acc, 'duration')
+  full = integrate_hansen(semi, result_acc, 'distance')
+  saveRDS(full, paste0(matrixpath, '/',lsch,'.contour.rds'))
+  
+}
+```
+
