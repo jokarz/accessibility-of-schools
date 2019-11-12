@@ -22,7 +22,7 @@ All the data are generated beforehand to make it feasible to be uploaded to shin
 
 ## Addition data
 
-Not all data that are present on the live application is available inside this repository, if you really needed it (for school projects and such), feel free to contact me on [Telegram](https://t.me/pengpengg) :) 
+Not all data that are present on the live application is available inside this repository, if you really needed it (for school projects and such), feel free to contact me on [Telegram](https://t.me/pengpengg)
 
 ## Running the backend server
 
@@ -37,7 +37,7 @@ java -Xmx2G -jar otp.jar --router current --graphs graphs --server
 
 ## Addition resources
 
-The backend server runs a local OpenTripPlanner server have a look at their api documentation [here](https://dev.opentripplanner.org/apidoc/1.3.0/) 
+The backend server runs a local OpenTripPlanner server. Take a look at their api documentation [here](https://dev.opentripplanner.org/apidoc/1.3.0/) 
 
 The isochrone generation was heavily inspired by https://xang1234.github.io/isochrone/. Take a look at the detailed explanation on the data that are generated/required to created an isochrone overlay
 
