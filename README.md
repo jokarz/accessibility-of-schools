@@ -3,7 +3,11 @@
 An interactive geospatial application that maps out the accessibility of schools (excluding tertiary schools and institutions) from public HDB in Singapore (Best viewed on desktop/laptop)
 
 ![alt text](https://github.com/jokarz/Burp/raw/master/ss.jpg)
-**_Live at [here](https://burp.shinyapps.io/proj)_**
+## **_Live at [here](https://burp.shinyapps.io/proj)_**
+
+# Demo
+![](https://github.com/jokarz/Burp/raw/master/demo/demo.gif)
+
 
 # Content
 * Getting Started
