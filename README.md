@@ -6,7 +6,7 @@ An interactive geospatial application that maps out the accessibility of schools
 ## **_Live at [here](https://burp.shinyapps.io/proj)_**
 
 # Demo
-![](https://github.com/jokarz/Burp/raw/master/demo/demo.gif)
+![](https://github.com/jokarz/accessibility-of-schools/blob/master/demo/demo.gif)
 
 
 # Content
